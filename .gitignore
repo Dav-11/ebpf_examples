@@ -1,3 +1,15 @@
+# MacOS
+.DS_Store
+
+#IDEs
+.idea
+.vscode
+.fleet
+.zed
+
+# build folder
+.output
+
 # Prerequisites
 *.d
 
