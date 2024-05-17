@@ -100,6 +100,9 @@ $(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) $(LIBARGPARSE_OBJ) $(LIBLOG_OBJ) | $(OUT
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
 
+arpinger: arpinger.c
+	$(call msg,CC,$@)
+	$(Q)gcc -o arpinger arpinger.c
 
 .PHONY: load
 load:

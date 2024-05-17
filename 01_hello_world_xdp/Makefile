@@ -85,7 +85,8 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX_H) | $(OUTPUT
 load:
 	$(BPFTOOL) prog load $(OUTPUT)/%.bpf.o /sys/fs/bpf/%
 
-
+attach:
+	ip link set dev lo xdp obj $(OUTPUT)/%.bpf.o sec xdp
 
 .PHONY: clean
 clean:

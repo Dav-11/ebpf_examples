@@ -1,3 +1,4 @@
+#include "xdp_dad.h"
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
@@ -6,14 +7,6 @@
 #include <string.h>
 
 #define ETH_P_ARP 0x0806
-#define ETH_ALEN 6
-
-#define MAX_ENTRY 3
-
-struct arp_entry {
-  unsigned char mac[MAX_ENTRY][ETH_ALEN];
-  int size;
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -49,8 +42,10 @@ int xdp_dad(struct xdp_md *ctx) {
 
   struct arphdr *arp = data + sizeof(struct ethhdr);
 
+  bpf_printk("[xdp_dad]: [T:%u] ", bpf_ntohs(arp->ar_op));
+
   // Check if this is an ARP response (opcode 2)
-  if (bpf_ntohs(arp->ar_op) != 2) {
+  if (bpf_ntohs(arp->ar_op) != 2u) {
     return XDP_PASS;
   }
 
@@ -59,9 +54,18 @@ int xdp_dad(struct xdp_md *ctx) {
     return XDP_PASS;
   }
 
+  bpf_printk("[RESPONSE] ");
+
   unsigned char *mac = data + sizeof(struct ethhdr) + sizeof(struct arphdr);
-  __u32 ip =
-      (__u32)data + sizeof(struct ethhdr) + sizeof(struct arphdr) + ETH_ALEN;
+  __u32 *ip =
+      (__u32 *)data + sizeof(struct ethhdr) + sizeof(struct arphdr) + ETH_ALEN;
+
+  __u8 *o0 = ip;
+  __u8 *o1 = ip + 8;
+  __u8 *o2 = ip + 16;
+  __u8 *o3 = ip + 24;
+
+  bpf_printk("[IP %o.%o.%o.%o] ", o0, o1, o2, o3);
 
   // lookup ip address
   struct arp_entry *entry = bpf_map_lookup_elem(&xdp_stats_map, &ip);
@@ -71,14 +75,30 @@ int xdp_dad(struct xdp_md *ctx) {
     struct arp_entry new_entry;
 
     // copy mac-address into first array elem
+
+    if (ETH_ALEN != sizeof(mac)) {
+      return XDP_PASS;
+    }
+
     memcpy(new_entry.mac[0], mac, ETH_ALEN);
 
     // set size to 1
     new_entry.size = 1;
 
     // insert new entry
-    bpf_map_update_elem(&xdp_stats_map, &ip, &new_entry, BPF_ANY);
+    int err = bpf_map_update_elem(&xdp_stats_map, &ip, &new_entry, BPF_ANY);
+    if (err) {
+      bpf_printk("failed to insert entry: %d\n", err);
+      return XDP_PASS;
+    }
 
+    bpf_printk("[NEW ENTRY ADDED FOR IP %o.%o.%o.%o] ", ip[0], ip[1], ip[2],
+               ip[3]);
+
+    return XDP_PASS;
+  }
+
+  if (ETH_ALEN != sizeof(mac)) {
     return XDP_PASS;
   }
 
@@ -86,7 +106,11 @@ int xdp_dad(struct xdp_md *ctx) {
   entry->size++;
 
   // update map
-  bpf_map_update_elem(&xdp_stats_map, &ip, entry, BPF_ANY);
+  int err = bpf_map_update_elem(&xdp_stats_map, &ip, entry, BPF_ANY);
+  if (err) {
+    bpf_printk("failed to insert entry: %d\n", err);
+    return XDP_PASS;
+  }
 
   // Continue processing the packet as usual
   return XDP_PASS;
