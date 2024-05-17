@@ -5,7 +5,7 @@ ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's
 LLVM_STRIP ?= llvm-strip
 
 # Source directories
-LIBBPF_SRC := $(abspath ../libs/libbpf/src)
+LIBBPF_SRC := $(abspath ../libs/bpftool/libbpf/src)
 BPFTOOL_SRC := $(abspath ../libs/bpftool/src)
 
 # Output directory
