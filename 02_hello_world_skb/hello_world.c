@@ -27,19 +27,19 @@ int main() {
   // load prog inside kernel
   hello_world_bpf__load(skel);
 
-  // loop until char c is received
-  printf("Type 'c' to exit...\n");
-  while (getchar() != 'c') {
-    sleep(1);
-  }
-  printf("Bye\n");
-
   // attach prog
   err = hello_world_bpf__attach(skel);
   if (err) {
     fprintf(stderr, "Failed to attach BPF skeleton: %d\n", err);
     goto destroy_prog;
   }
+
+  // loop until char c is received
+  printf("Type 'c' to exit...\n");
+  while (getchar() != 'c') {
+    sleep(1);
+  }
+  printf("Bye\n");
 
 destroy_prog:
   hello_world_bpf__destroy(skel);
