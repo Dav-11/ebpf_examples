@@ -19,9 +19,9 @@ bpftool net attach xdp id <prog_id> dev <if_name>
 3. Build and run the arp req program:
 ```shell
 make arpinger
-./arpinger
+./arpinger <if_name>
 ```
 4. Check the output:
 ```shell
-bpftool trace pipe
+bpftool prog trace
 ```

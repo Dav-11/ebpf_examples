@@ -15,98 +15,128 @@ struct {
   __uint(max_entries, 1024);
 } xdp_stats_map SEC(".maps");
 
-__u32 count = 0;
+struct data_t {
+  void *data_end;
+  void *data;
+  void *pos;
+};
+
+struct arp_hdr {
+  __be16 htype;       // Hardware Type
+  __be16 ptype;       // Protocol Type
+  __u8 hlen;          // Hardware Address Length
+  __u8 plen;          // Protocol Address Length
+  __be16 oper;        // Operation
+  __u8 sha[ETH_ALEN]; // Sender Hardware Address (MAC)
+  __be32 spa;         // Sender Protocol Address (IP)
+  __u8 tha[ETH_ALEN]; // Target Hardware Address (MAC)
+  __be32 tpa;         // Target Protocol Address (IP)
+};
+
+static __always_inline struct ethhdr *get_ethhdr_arp(struct data_t *data) {
+
+  if (data->pos + sizeof(struct ethhdr) > data->data_end) {
+    return NULL;
+  }
+
+  struct ethhdr *eth = data->pos;
+
+  // increment position to next header
+  data->pos += sizeof(struct ethhdr);
+
+  // check if pkg is arp
+  if (eth->h_proto != bpf_htons(ETH_P_ARP)) {
+    return NULL;
+  }
+
+  return eth;
+}
+
+static __always_inline struct arp_hdr *get_arphdr(struct data_t *data) {
+
+  if (data->pos + sizeof(struct arp_hdr) > data->data_end) {
+    return NULL;
+  }
+
+  struct arp_hdr *arp = data->pos;
+
+  // increment position to next header
+  data->pos += sizeof(struct arp_hdr);
+
+  return arp;
+}
+
+static __always_inline void print_ip (__u32 ip) {
+  bpf_printk("IP: %x\n", ip);
+}
 
 SEC("xdp")
 int xdp_dad(struct xdp_md *ctx) {
 
-  void *data_end = (void *)(long)ctx->data_end;
-  void *data = (void *)(long)ctx->data;
+  struct data_t data;
+  data.data = (void *)(long)ctx->data;
+  data.data_end = (void *)(long)ctx->data_end;
+  data.pos = data.data;
 
-  // Check if we have at least the Ethernet header
-  if (data + sizeof(struct ethhdr) > data_end) {
+  struct ethhdr *eth;
+  struct arp_hdr *arp;
+
+  // get the ethernet header
+  eth = get_ethhdr_arp(&data);
+  if (!eth) {
     return XDP_PASS;
   }
 
-  struct ethhdr *eth = data;
-
-  // Check if this is an ARP packet
-  if (bpf_ntohs(eth->h_proto) != ETH_P_ARP) {
+  arp = get_arphdr(&data);
+  if (!arp) {
     return XDP_PASS;
   }
 
-  // Check if we have at least the ARP header
-  if (data + sizeof(struct ethhdr) + sizeof(struct arphdr) > data_end) {
-    return XDP_PASS;
-  }
-
-  struct arphdr *arp = data + sizeof(struct ethhdr);
-
-  bpf_printk("[xdp_dad]: [T:%u] ", bpf_ntohs(arp->ar_op));
+  bpf_printk("[xdp_dad]: [TYPE:%u] ", bpf_ntohs(arp->oper));
 
   // Check if this is an ARP response (opcode 2)
-  if (bpf_ntohs(arp->ar_op) != 2u) {
-    return XDP_PASS;
-  }
-
-  if (data + sizeof(struct ethhdr) + sizeof(struct arphdr) + ETH_ALEN + 4 >
-      data_end) {
+  if (bpf_ntohs(arp->oper) != 2u) {
     return XDP_PASS;
   }
 
   bpf_printk("[RESPONSE] ");
 
-  unsigned char *mac = data + sizeof(struct ethhdr) + sizeof(struct arphdr);
-  __u32 *ip =
-      (__u32 *)data + sizeof(struct ethhdr) + sizeof(struct arphdr) + ETH_ALEN;
-
-  __u8 *o0 = ip;
-  __u8 *o1 = ip + 8;
-  __u8 *o2 = ip + 16;
-  __u8 *o3 = ip + 24;
-
-  bpf_printk("[IP %o.%o.%o.%o] ", o0, o1, o2, o3);
+  print_ip(arp->spa);
 
   // lookup ip address
-  struct arp_entry *entry = bpf_map_lookup_elem(&xdp_stats_map, &ip);
+  struct arp_entry *entry = bpf_map_lookup_elem(&xdp_stats_map, &arp->spa);
   if (!entry) {
 
     // create new entry
-    struct arp_entry new_entry;
+    struct arp_entry new_entry = {};
 
-    // copy mac-address into first array elem
-
-    if (ETH_ALEN != sizeof(mac)) {
-      return XDP_PASS;
-    }
-
-    memcpy(new_entry.mac[0], mac, ETH_ALEN);
+    // copy mac address
+    memcpy(new_entry.mac[0], arp->sha, ETH_ALEN);
 
     // set size to 1
     new_entry.size = 1;
 
     // insert new entry
-    int err = bpf_map_update_elem(&xdp_stats_map, &ip, &new_entry, BPF_ANY);
+    int err = bpf_map_update_elem(&xdp_stats_map, &arp->spa, &new_entry, BPF_ANY);
     if (err) {
       bpf_printk("failed to insert entry: %d\n", err);
       return XDP_PASS;
     }
 
-    bpf_printk("[NEW ENTRY ADDED FOR IP %o.%o.%o.%o] ", ip[0], ip[1], ip[2],
-               ip[3]);
+    bpf_printk("[NEW ENTRY ADDED FOR IP] ");
 
     return XDP_PASS;
   }
 
-  if (ETH_ALEN != sizeof(mac)) {
+  if (ETH_ALEN != sizeof(arp->sha)) {
     return XDP_PASS;
   }
 
-  memcpy(entry->mac[entry->size], mac, ETH_ALEN);
+  memcpy(entry->mac[entry->size], arp->sha, ETH_ALEN);
   entry->size++;
 
   // update map
-  int err = bpf_map_update_elem(&xdp_stats_map, &ip, entry, BPF_ANY);
+  int err = bpf_map_update_elem(&xdp_stats_map, &arp->spa, entry, BPF_ANY);
   if (err) {
     bpf_printk("failed to insert entry: %d\n", err);
     return XDP_PASS;
