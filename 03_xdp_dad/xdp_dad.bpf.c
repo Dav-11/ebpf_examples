@@ -7,12 +7,13 @@
 #include <string.h>
 
 #define ETH_P_ARP 0x0806
+#define MAX_ENTRIES 1024
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, __u32); // ip of source
+  __type(key, __u32); // IP of source
   __type(value, struct arp_entry);
-  __uint(max_entries, 1024);
+  __uint(max_entries, MAX_ENTRIES);
 } xdp_stats_map SEC(".maps");
 
 struct data_t {
@@ -21,19 +22,19 @@ struct data_t {
   void *pos;
 };
 
-struct arp_hdr {
-  __be16 htype;       // Hardware Type
-  __be16 ptype;       // Protocol Type
-  __u8 hlen;          // Hardware Address Length
-  __u8 plen;          // Protocol Address Length
-  __be16 oper;        // Operation
-  __u8 sha[ETH_ALEN]; // Sender Hardware Address (MAC)
-  __be32 spa;         // Sender Protocol Address (IP)
-  __u8 tha[ETH_ALEN]; // Target Hardware Address (MAC)
-  __be32 tpa;         // Target Protocol Address (IP)
+struct __attribute__((packed)) arp_hdr {
+  __be16 htype; // Hardware Type
+  __be16 ptype; // Protocol Type
+  __u8 hlen;    // Hardware Address Length
+  __u8 plen;    // Protocol Address Length
+  __be16 oper;  // Operation
+  __u8 sha[6];  // Sender Hardware Address (MAC)
+  __be32 spa;   // Sender Protocol Address (IP)
+  __u8 tha[6];  // Target Hardware Address (MAC)
+  __be32 tpa;   // Target Protocol Address (IP)
 };
 
-static __always_inline struct ethhdr *get_ethhdr_arp(struct data_t *data) {
+struct ethhdr *get_ethhdr_arp(struct data_t *data) {
 
   if (data->pos + sizeof(struct ethhdr) > data->data_end) {
     return NULL;
@@ -41,11 +42,11 @@ static __always_inline struct ethhdr *get_ethhdr_arp(struct data_t *data) {
 
   struct ethhdr *eth = data->pos;
 
-  // increment position to next header
+  // Increment position to next header
   data->pos += sizeof(struct ethhdr);
 
-  // check if pkg is arp
-  if (eth->h_proto != bpf_htons(ETH_P_ARP)) {
+  // Check if packet is ARP
+  if (bpf_ntohs(eth->h_proto) != ETH_P_ARP) {
     return NULL;
   }
 
@@ -54,20 +55,20 @@ static __always_inline struct ethhdr *get_ethhdr_arp(struct data_t *data) {
 
 static __always_inline struct arp_hdr *get_arphdr(struct data_t *data) {
 
+  // bpf_printk("pkg size: [T: %d, R: %d] wanted: %u",
+  //            (data->data_end - data->data), (data->data_end - data->pos),
+  //            sizeof(struct arp_hdr));
+
   if (data->pos + sizeof(struct arp_hdr) > data->data_end) {
     return NULL;
   }
 
   struct arp_hdr *arp = data->pos;
 
-  // increment position to next header
+  // Increment position to next header
   data->pos += sizeof(struct arp_hdr);
 
   return arp;
-}
-
-static __always_inline void print_ip (__u32 ip) {
-  bpf_printk("IP: %x\n", ip);
 }
 
 SEC("xdp")
@@ -78,17 +79,15 @@ int xdp_dad(struct xdp_md *ctx) {
   data.data_end = (void *)(long)ctx->data_end;
   data.pos = data.data;
 
-  struct ethhdr *eth;
-  struct arp_hdr *arp;
-
-  // get the ethernet header
-  eth = get_ethhdr_arp(&data);
+  struct ethhdr *eth = get_ethhdr_arp(&data);
   if (!eth) {
     return XDP_PASS;
   }
 
-  arp = get_arphdr(&data);
+  struct arp_hdr *arp = get_arphdr(&data);
   if (!arp) {
+
+    bpf_printk("[xdp_dad]: failed to get arp header");
     return XDP_PASS;
   }
 
@@ -99,46 +98,50 @@ int xdp_dad(struct xdp_md *ctx) {
     return XDP_PASS;
   }
 
-  bpf_printk("[RESPONSE] ");
-
-  print_ip(arp->spa);
-
-  // lookup ip address
+  // Lookup IP address
   struct arp_entry *entry = bpf_map_lookup_elem(&xdp_stats_map, &arp->spa);
   if (!entry) {
-
-    // create new entry
+    // Create new entry
     struct arp_entry new_entry = {};
 
-    // copy mac address
+    // Copy MAC address
     memcpy(new_entry.mac[0], arp->sha, ETH_ALEN);
 
-    // set size to 1
+    // Set size to 1
     new_entry.size = 1;
 
-    // insert new entry
-    int err = bpf_map_update_elem(&xdp_stats_map, &arp->spa, &new_entry, BPF_ANY);
+    // Insert new entry
+    int err =
+        bpf_map_update_elem(&xdp_stats_map, &arp->spa, &new_entry, BPF_ANY);
     if (err) {
       bpf_printk("failed to insert entry: %d\n", err);
       return XDP_PASS;
     }
 
-    bpf_printk("[NEW ENTRY ADDED FOR IP] ");
-
+    bpf_printk("[NEW ENTRY ADDED FOR IP: %x]", arp->spa);
     return XDP_PASS;
   }
 
-  if (ETH_ALEN != sizeof(arp->sha)) {
+  if (entry->size < 0 || entry->size >= MAX_ENTRY) {
     return XDP_PASS;
+  }
+
+  // check if already exists
+  for (int i = 0; i < entry->size; i++) {
+    if (memcmp(entry->mac[i], arp->sha, ETH_ALEN) == 0) {
+      return XDP_PASS;
+    }
   }
 
   memcpy(entry->mac[entry->size], arp->sha, ETH_ALEN);
   entry->size++;
 
-  // update map
+  bpf_printk("[NEW ENTRY ADDED FOR IP: %x]", arp->spa);
+
+  // Update map
   int err = bpf_map_update_elem(&xdp_stats_map, &arp->spa, entry, BPF_ANY);
   if (err) {
-    bpf_printk("failed to insert entry: %d\n", err);
+    bpf_printk("failed to update entry: %d\n", err);
     return XDP_PASS;
   }
 
