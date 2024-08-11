@@ -51,7 +51,7 @@ APPS = hello_world
 # TARGETS
 ####
 
-all: $(OUTPUT)/%.bpf.o
+all: $(APPS)
 
 # create folders
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
@@ -81,12 +81,28 @@ $(OUTPUT)/%.bpf.o: %.bpf.c $(LIBBPF_OBJ) $(wildcard %.h) $(VMLINUX_H) | $(OUTPUT
 	$(Q) clang -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 	$(Q) llvm-strip -g $@ # strip useless DWARF info
 
+# Generate BPF skeletons
+$(OUTPUT)/%.skel.h: $(OUTPUT)/%.bpf.o | $(OUTPUT) $(BPFTOOL)
+	$(call msg,GEN-SKEL,$@)
+	$(Q) $(BPFTOOL) gen skeleton $< > $@
+
+# for each program in APPS, its corresponding object file (e.g., example.o)
+# depends on the existence of a .skel.h file (e.g., example.skel.h).
+$(patsubst %,$(OUTPUT)/%.o,$(APPS)): %.o: %.skel.h
+
+# compile
+$(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT)
+	$(call msg,CC,$@)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
+
+# link
+$(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) $(LIBARGPARSE_OBJ) $(LIBLOG_OBJ) | $(OUTPUT)
+	$(call msg,BINARY,$@)
+	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
+
 .PHONY: load
 load:
 	$(BPFTOOL) prog load $(OUTPUT)/%.bpf.o /sys/fs/bpf/%
-
-attach:
-	ip link set dev lo xdp obj $(OUTPUT)/%.bpf.o sec xdp
 
 .PHONY: clean
 clean:
