@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
   skel = hello_world_bpf__open();
 
   // Set program type to XDP
-  bpf_program__set_type(skel->progs.xdp_dad, BPF_PROG_TYPE_XDP);
+  bpf_program__set_type(skel->progs.hello_world, BPF_PROG_TYPE_XDP);
 
   // Get the interface index of the desired interface (e.g., ens3)
   int ifindex = if_nametoindex(ifname);
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
   xdp_flags |= XDP_FLAGS_UPDATE_IF_NOEXIST;
 
   // attach prog
-  err = bpf_xdp_attach(ifindex, bpf_program__fd(skel->progs.xdp_dad), xdp_flags, NULL);
+  err = bpf_xdp_attach(ifindex, bpf_program__fd(skel->progs.hello_world), xdp_flags, NULL);
   if (err) {
     printf("Error while attaching BPF skeleton");
     goto cleanup;
